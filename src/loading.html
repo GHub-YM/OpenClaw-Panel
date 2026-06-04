@@ -1,0 +1,71 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OpenClaw Panel</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0f1117;
+      color: #f4f6fb;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(88, 166, 255, 0.18), transparent 30%),
+        radial-gradient(circle at 80% 70%, rgba(163, 113, 247, 0.16), transparent 32%),
+        #0f1117;
+    }
+    main {
+      width: min(560px, calc(100vw - 48px));
+      padding: 32px;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 20px;
+      background: rgba(20, 24, 34, 0.78);
+      box-shadow: 0 24px 80px rgba(0,0,0,0.4);
+      backdrop-filter: blur(16px);
+    }
+    h1 { margin: 0 0 12px; font-size: 26px; }
+    p { margin: 8px 0; line-height: 1.6; color: #c9d1d9; }
+    code {
+      background: rgba(255,255,255,0.08);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid rgba(255,255,255,0.22);
+      border-top-color: #58a6ff;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-bottom: 20px;
+    }
+    .error { color: #ff7b72; white-space: pre-wrap; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="spinner"></div>
+    <h1>正在启动 OpenClaw…</h1>
+    <p id="status">正在检查 <code>127.0.0.1:18789</code></p>
+    <p id="error" class="error"></p>
+  </main>
+  <script>
+    window.openClawPanel?.onStatus((message) => {
+      document.getElementById('status').textContent = message;
+    });
+    window.openClawPanel?.onError((message) => {
+      document.querySelector('.spinner').style.display = 'none';
+      document.querySelector('h1').textContent = 'OpenClaw 启动失败';
+      document.getElementById('error').textContent = message;
+    });
+  </script>
+</body>
+</html>
