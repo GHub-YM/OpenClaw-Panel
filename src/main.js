@@ -136,14 +136,7 @@ function getOpenClawCliTarget() {
     };
   }
 
-  if (process.platform === 'win32') {
-    const cmdShim = path.join(process.env.APPDATA || path.join(app.getPath('home'), 'AppData', 'Roaming'), 'npm', 'openclaw.cmd');
-    if (fs.existsSync(cmdShim)) {
-      return { type: 'cmd-shim', command: cmdShim };
-    }
-  }
-
-  return { type: 'direct', command: 'openclaw' };
+  return { type: 'missing', command: 'openclaw' };
 }
 
 function buildOpenClawDisplay(target, args) {
@@ -159,11 +152,8 @@ function spawnOpenClawCommand(args, stdio = ['ignore', 'pipe', 'pipe']) {
       stdio,
     });
   }
-  if (target.type === 'cmd-shim' && process.platform === 'win32') {
-    return spawn(process.env.ComSpec || path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe'), ['/d', '/c', 'call', target.command, ...args], {
-      windowsHide: true,
-      stdio,
-    });
+  if (target.type === 'missing') {
+    throw new Error('无法静默启动 OpenClaw：未找到 node.exe 或 openclaw.mjs。请确认 OpenClaw 已通过 npm 安装，且 Node.js 在 PATH 中。');
   }
   return spawn(target.command, args, {
     windowsHide: true,
@@ -244,38 +234,14 @@ async function ensureOpenClaw() {
     return;
   }
 
-  const attempts = [];
-
-  try {
-    await runOpenClawCli(['gateway', 'start'], { status: '正在启动 OpenClaw gateway 服务', allowFailure: true });
-    await waitForOpenClaw(SERVICE_WAIT_MS, 'openclaw gateway start');
-    startedOpenClaw = false;
-    sendStatus('OpenClaw gateway 服务已启动，正在打开控制面板…');
-    return;
-  } catch (error) {
-    attempts.push(`gateway start: ${error.message}`);
-  }
-
-  try {
-    await runOpenClawCli(['gateway', 'restart'], { status: '正在重启 OpenClaw gateway 服务', allowFailure: true });
-    await waitForOpenClaw(SERVICE_WAIT_MS, 'openclaw gateway restart');
-    startedOpenClaw = false;
-    sendStatus('OpenClaw gateway 服务已重启，正在打开控制面板…');
-    return;
-  } catch (error) {
-    attempts.push(`gateway restart: ${error.message}`);
-  }
-
   try {
     runOpenClawGatewayForeground();
     await waitForOpenClaw(RUN_WAIT_MS, 'openclaw gateway run');
-    sendStatus('OpenClaw gateway run 已启动，正在打开控制面板…');
+    sendStatus('OpenClaw gateway run 已静默启动，正在打开控制面板…');
     return;
   } catch (error) {
-    attempts.push(`gateway run: ${error.message}`);
+    throw new Error(`OpenClaw gateway 静默启动失败。\n\n已尝试：\n- gateway run: ${error.message}`);
   }
-
-  throw new Error(`OpenClaw gateway 启动失败。\n\n已尝试：\n${attempts.map((item) => `- ${item}`).join('\n')}`);
 }
 
 async function bootPanel() {
