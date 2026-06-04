@@ -63,6 +63,12 @@ function sendStatus(message) {
 }
 
 function sendError(message) {
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.appendFileSync(path.join(app.getPath('userData'), 'openclaw-panel.log'), `[${new Date().toISOString()}] ${message}\n`, 'utf8');
+  } catch {
+    // Ignore logging failures.
+  }
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send('startup-error', message);
 }
@@ -99,34 +105,75 @@ function quoteCmdArg(value) {
   return `"${String(value).replace(/"/g, '\\"')}"`;
 }
 
-function getOpenClawCmdShim() {
-  if (process.env.OPENCLAW_CMD) return process.env.OPENCLAW_CMD;
-  if (process.platform === 'win32') {
-    const npmDir = path.join(process.env.APPDATA || path.join(app.getPath('home'), 'AppData', 'Roaming'), 'npm');
-    const cmdShim = path.join(npmDir, 'openclaw.cmd');
-    if (fs.existsSync(cmdShim)) return cmdShim;
+function findExecutableOnPath(name) {
+  const pathExts = process.platform === 'win32'
+    ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';')
+    : [''];
+  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of pathExts) {
+      const candidate = path.join(dir, process.platform === 'win32' && !name.toLowerCase().endsWith(ext.toLowerCase()) ? `${name}${ext}` : name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
   }
-  return 'openclaw';
+  return null;
 }
 
-function buildOpenClawDisplay(cmdShim, args) {
-  return [cmdShim, ...args].map(quoteCmdArg).join(' ');
+function getOpenClawCliTarget() {
+  if (process.env.OPENCLAW_CMD) {
+    return { type: 'direct', command: process.env.OPENCLAW_CMD };
+  }
+
+  const npmOpenClawDir = path.join(process.env.APPDATA || path.join(app.getPath('home'), 'AppData', 'Roaming'), 'npm', 'node_modules', 'openclaw');
+  const openClawMjs = path.join(npmOpenClawDir, 'openclaw.mjs');
+  const nodeExe = findExecutableOnPath('node');
+
+  if (nodeExe && fs.existsSync(openClawMjs)) {
+    return {
+      type: 'node-mjs',
+      command: nodeExe,
+      prefixArgs: [openClawMjs],
+    };
+  }
+
+  if (process.platform === 'win32') {
+    const cmdShim = path.join(process.env.APPDATA || path.join(app.getPath('home'), 'AppData', 'Roaming'), 'npm', 'openclaw.cmd');
+    if (fs.existsSync(cmdShim)) {
+      return { type: 'cmd-shim', command: cmdShim };
+    }
+  }
+
+  return { type: 'direct', command: 'openclaw' };
+}
+
+function buildOpenClawDisplay(target, args) {
+  if (target.type === 'node-mjs') return [target.command, ...target.prefixArgs, ...args].map(quoteCmdArg).join(' ');
+  return [target.command, ...args].map(quoteCmdArg).join(' ');
 }
 
 function spawnOpenClawCommand(args, stdio = ['ignore', 'pipe', 'pipe']) {
-  const cmdShim = getOpenClawCmdShim();
-  if (process.platform === 'win32') {
-    return spawn(process.env.ComSpec || path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe'), ['/d', '/c', 'call', cmdShim, ...args], {
+  const target = getOpenClawCliTarget();
+  if (target.type === 'node-mjs') {
+    return spawn(target.command, [...target.prefixArgs, ...args], {
       windowsHide: true,
       stdio,
     });
   }
-  return spawn(cmdShim, args, { stdio });
+  if (target.type === 'cmd-shim' && process.platform === 'win32') {
+    return spawn(process.env.ComSpec || path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe'), ['/d', '/c', 'call', target.command, ...args], {
+      windowsHide: true,
+      stdio,
+    });
+  }
+  return spawn(target.command, args, {
+    windowsHide: true,
+    stdio,
+  });
 }
 
 function runOpenClawCli(args, options = {}) {
-  const cmdShim = getOpenClawCmdShim();
-  const display = buildOpenClawDisplay(cmdShim, args);
+  const target = getOpenClawCliTarget();
+  const display = buildOpenClawDisplay(target, args);
   sendStatus(`${options.status || '正在执行 OpenClaw 命令'}…\n${display}`);
 
   return new Promise((resolve, reject) => {
@@ -159,9 +206,9 @@ function runOpenClawCli(args, options = {}) {
 }
 
 function runOpenClawGatewayForeground() {
-  const cmdShim = getOpenClawCmdShim();
+  const target = getOpenClawCliTarget();
   const args = ['gateway', 'run'];
-  const display = buildOpenClawDisplay(cmdShim, args);
+  const display = buildOpenClawDisplay(target, args);
   sendStatus(`服务启动/重启仍不可用，改用前台 gateway run…\n${display}`);
 
   openClawProcess = spawnOpenClawCommand(args);
