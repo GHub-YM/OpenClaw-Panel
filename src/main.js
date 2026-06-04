@@ -6,9 +6,10 @@ const path = require('node:path');
 
 const PANEL_URL = process.env.OPENCLAW_PANEL_URL || 'http://127.0.0.1:18789';
 const HEALTH_URL = `${PANEL_URL}/`;
-const START_TIMEOUT_MS = 45_000;
+const START_TIMEOUT_MS = 5 * 60_000;
+const START_NOTICE_MS = 45_000;
 const CHECK_INTERVAL_MS = 800;
-const DEFAULT_OPENCLAW_ARGS = ['gateway', '--port', '18789'];
+const DEFAULT_OPENCLAW_ARGS = ['gateway', '--port', '18789', 'run'];
 
 const SETTINGS_FILE = 'settings.json';
 const CLOSE_BEHAVIOR = {
@@ -23,6 +24,8 @@ let tray;
 let openClawProcess = null;
 let startedOpenClaw = false;
 let isQuitting = false;
+let startupInProgress = false;
+let panelLoaded = false;
 let settings = { closeBehavior: CLOSE_BEHAVIOR.ASK };
 
 function getIconPath() {
@@ -81,11 +84,19 @@ function checkUrl(url) {
 
 function waitForOpenClaw(timeoutMs) {
   const start = Date.now();
+  let noticeShown = false;
   return new Promise((resolve, reject) => {
     async function tick() {
       if (await checkUrl(HEALTH_URL)) return resolve();
-      if (Date.now() - start > timeoutMs) {
-        return reject(new Error(`等待 OpenClaw 启动超时：${Math.round(timeoutMs / 1000)} 秒`));
+
+      const elapsed = Date.now() - start;
+      if (!noticeShown && elapsed > START_NOTICE_MS) {
+        noticeShown = true;
+        sendStatus('OpenClaw 仍在启动中，冷启动可能需要一两分钟…');
+      }
+
+      if (elapsed > timeoutMs) {
+        return reject(new Error(`等待 OpenClaw 启动超时：${Math.round(timeoutMs / 1000)} 秒。OpenClaw 进程可能已启动但 Web 面板尚未就绪，请稍后在托盘菜单选择“打开 OpenClaw Panel”，或检查 openclaw gateway status。`));
       }
       setTimeout(tick, CHECK_INTERVAL_MS);
     }
@@ -196,6 +207,21 @@ async function ensureOpenClaw() {
   await startOpenClaw();
   await waitForOpenClaw(START_TIMEOUT_MS);
   sendStatus('OpenClaw 已就绪，正在打开控制面板…');
+}
+
+async function bootPanel() {
+  if (!mainWindow || mainWindow.isDestroyed() || startupInProgress || panelLoaded) return;
+  startupInProgress = true;
+  try {
+    await ensureOpenClaw();
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    panelLoaded = true;
+    await mainWindow.loadURL(PANEL_URL);
+  } catch (error) {
+    sendError(error.stack || error.message || String(error));
+  } finally {
+    startupInProgress = false;
+  }
 }
 
 function showMainWindow() {
@@ -359,15 +385,17 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'loading.html'));
   mainWindow.on('close', handleWindowClose);
-
-  mainWindow.once('ready-to-show', async () => {
-    mainWindow.show();
-    try {
-      await ensureOpenClaw();
-      await mainWindow.loadURL(PANEL_URL);
-    } catch (error) {
-      sendError(error.stack || error.message || String(error));
+  mainWindow.webContents.on('did-finish-load', () => {
+    const currentUrl = mainWindow.webContents.getURL();
+    if (currentUrl.startsWith('file://') && currentUrl.endsWith('/loading.html')) {
+      panelLoaded = false;
+      bootPanel();
     }
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+    bootPanel();
   });
 }
 
