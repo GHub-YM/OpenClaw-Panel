@@ -8,8 +8,7 @@ const PANEL_URL = process.env.OPENCLAW_PANEL_URL || 'http://127.0.0.1:18789';
 const HEALTH_URL = `${PANEL_URL}/`;
 const START_TIMEOUT_MS = 45_000;
 const CHECK_INTERVAL_MS = 800;
-const OPENCLAW_CMD = process.env.OPENCLAW_CMD || 'openclaw';
-const OPENCLAW_ARGS = (process.env.OPENCLAW_ARGS || 'gateway --port 18789').split(' ').filter(Boolean);
+const DEFAULT_OPENCLAW_ARGS = ['gateway', '--port', '18789'];
 
 const SETTINGS_FILE = 'settings.json';
 const CLOSE_BEHAVIOR = {
@@ -94,33 +93,95 @@ function waitForOpenClaw(timeoutMs) {
   });
 }
 
-function startOpenClaw() {
-  sendStatus('未检测到运行中的 OpenClaw，正在启动 gateway…');
-  openClawProcess = spawn(OPENCLAW_CMD, OPENCLAW_ARGS, {
-    windowsHide: true,
-    detached: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  startedOpenClaw = true;
+function parseOpenClawArgs() {
+  return (process.env.OPENCLAW_ARGS || DEFAULT_OPENCLAW_ARGS.join(' ')).split(/\s+/).filter(Boolean);
+}
 
-  openClawProcess.stdout.on('data', (data) => {
-    const text = data.toString().trim();
-    if (text) sendStatus(text.slice(-240));
-  });
+function quoteCmdArg(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
+}
 
-  openClawProcess.stderr.on('data', (data) => {
-    const text = data.toString().trim();
-    if (text) sendStatus(text.slice(-240));
-  });
+function getOpenClawLaunchCommand() {
+  if (process.env.OPENCLAW_CMD) {
+    return {
+      command: process.env.OPENCLAW_CMD,
+      args: parseOpenClawArgs(),
+      display: `${process.env.OPENCLAW_CMD} ${parseOpenClawArgs().join(' ')}`,
+    };
+  }
 
-  openClawProcess.on('error', (error) => {
-    sendError(`无法运行 ${OPENCLAW_CMD}: ${error.message}`);
-  });
-
-  openClawProcess.on('exit', (code, signal) => {
-    if (!isQuitting && startedOpenClaw) {
-      sendError(`OpenClaw 进程已退出。code=${code ?? 'null'} signal=${signal ?? 'null'}`);
+  if (process.platform === 'win32') {
+    const npmDir = path.join(process.env.APPDATA || path.join(app.getPath('home'), 'AppData', 'Roaming'), 'npm');
+    const cmdShim = path.join(npmDir, 'openclaw.cmd');
+    if (fs.existsSync(cmdShim)) {
+      const script = [quoteCmdArg(cmdShim), ...parseOpenClawArgs().map(quoteCmdArg)].join(' ');
+      return {
+        command: process.env.ComSpec || path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe'),
+        args: ['/d', '/s', '/c', script],
+        display: script,
+      };
     }
+  }
+
+  return {
+    command: 'openclaw',
+    args: parseOpenClawArgs(),
+    display: `openclaw ${parseOpenClawArgs().join(' ')}`,
+  };
+}
+
+function startOpenClaw() {
+  const launch = getOpenClawLaunchCommand();
+  sendStatus(`未检测到运行中的 OpenClaw，正在启动 gateway…\n${launch.display}`);
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    openClawProcess = spawn(launch.command, launch.args, {
+      windowsHide: true,
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const failStartup = (error) => {
+      if (settled) return;
+      settled = true;
+      startedOpenClaw = false;
+      reject(error);
+    };
+
+    openClawProcess.once('spawn', () => {
+      settled = true;
+      startedOpenClaw = true;
+      resolve(openClawProcess);
+    });
+
+    openClawProcess.stdout.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) sendStatus(text.slice(-240));
+    });
+
+    openClawProcess.stderr.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) sendStatus(text.slice(-240));
+    });
+
+    openClawProcess.on('error', (error) => {
+      const message = `无法启动 OpenClaw gateway。\n命令：${launch.display}\n错误：${error.message}`;
+      sendError(message);
+      failStartup(new Error(message));
+    });
+
+    openClawProcess.on('exit', (code, signal) => {
+      if (!settled) {
+        const message = `OpenClaw gateway 启动后立即退出。\n命令：${launch.display}\ncode=${code ?? 'null'} signal=${signal ?? 'null'}`;
+        sendError(message);
+        failStartup(new Error(message));
+        return;
+      }
+      if (!isQuitting && startedOpenClaw) {
+        sendError(`OpenClaw 进程已退出。code=${code ?? 'null'} signal=${signal ?? 'null'}`);
+      }
+    });
   });
 }
 
@@ -132,7 +193,7 @@ async function ensureOpenClaw() {
     return;
   }
 
-  startOpenClaw();
+  await startOpenClaw();
   await waitForOpenClaw(START_TIMEOUT_MS);
   sendStatus('OpenClaw 已就绪，正在打开控制面板…');
 }
